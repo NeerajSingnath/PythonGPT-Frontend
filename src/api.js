@@ -31,6 +31,20 @@ async function request(path, options = {}) {
   return response.json();
 }
 
+function encodeWorkspacePath(workspace, filePath) {
+  const encodedWorkspace = encodeURIComponent(workspace);
+
+  const encodedPath = filePath
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+  return {
+    encodedWorkspace,
+    encodedPath,
+  };
+}
+
 export function getWorkspaces() {
   return request("/workspaces");
 }
@@ -40,14 +54,26 @@ export function getWorkspaceFiles(workspace) {
 }
 
 export function getWorkspaceFile(workspace, filePath) {
-  const encodedWorkspace = encodeURIComponent(workspace);
-
-  const encodedPath = filePath
-    .split("/")
-    .map((part) => encodeURIComponent(part))
-    .join("/");
+  const { encodedWorkspace, encodedPath } = encodeWorkspacePath(
+    workspace,
+    filePath,
+  );
 
   return request(`/workspaces/${encodedWorkspace}/files/${encodedPath}`);
+}
+
+export function saveWorkspaceFile(workspace, filePath, content) {
+  const { encodedWorkspace, encodedPath } = encodeWorkspacePath(
+    workspace,
+    filePath,
+  );
+
+  return request(`/workspaces/${encodedWorkspace}/files/${encodedPath}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      content,
+    }),
+  });
 }
 
 export { API_BASE_URL, WS_BASE_URL };
