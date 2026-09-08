@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   createAgentRun,
   createAgentRunSocket,
+  createWorkspace as createWorkspaceRequest,
   getAgentRun,
   getWorkspaceFile,
   getWorkspaceFiles,
@@ -47,6 +48,18 @@ function normalizeFileContent(data) {
   return data?.content ?? "";
 }
 
+function normalizeCreatedWorkspace(data, fallbackName) {
+  if (typeof data === "string") {
+    return data;
+  }
+
+  if (typeof data?.workspace === "string") {
+    return data.workspace;
+  }
+
+  return data?.name ?? data?.workspace?.name ?? fallbackName;
+}
+
 function buildExplorerFiles(paths) {
   const rootFiles = [];
   const folders = new Map();
@@ -64,6 +77,7 @@ function buildExplorerFiles(paths) {
     }
 
     const folderName = parts[0];
+
     const childName = parts.slice(1).join("/");
 
     if (!folders.has(folderName)) {
@@ -149,6 +163,8 @@ function getLatestTestOutput(history) {
 }
 
 function WorkspacePage() {
+  const [workspaces, setWorkspaces] = useState([]);
+
   const [workspace, setWorkspace] = useState("Loading...");
 
   const [connected, setConnected] = useState(false);
@@ -190,9 +206,15 @@ function WorkspacePage() {
 
   const selectedFileRef = useRef(selectedFile);
 
+  const workspaceRef = useRef(workspace);
+
   useEffect(() => {
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
 
   const refreshFiles = async (activeWorkspace) => {
     const fileData = await getWorkspaceFiles(activeWorkspace);
@@ -211,12 +233,223 @@ function WorkspacePage() {
 
   const reloadSelectedFile = async (activeWorkspace, filePath) => {
     if (!filePath) {
+      setCode("");
       return;
     }
 
     const data = await getWorkspaceFile(activeWorkspace, filePath);
 
     setCode(normalizeFileContent(data));
+  };
+
+  const loadWorkspace = async (activeWorkspace, { initial = false } = {}) => {
+    setWorkspace(activeWorkspace);
+
+    workspaceRef.current = activeWorkspace;
+
+    setFiles([]);
+    setSelectedFile(null);
+    setCode("");
+    setPlan([]);
+    setTestLines([]);
+
+    const { paths, explorerFiles } = await refreshFiles(activeWorkspace);
+
+    const expanded = {};
+
+    explorerFiles.forEach((item) => {
+      if (item.type === "folder") {
+        expanded[item.name] = true;
+      }
+    });
+
+    setExpandedFolders(expanded);
+
+    const firstFile = getFirstFilePath(explorerFiles);
+
+    if (firstFile) {
+      setSelectedFile(firstFile);
+
+      selectedFileRef.current = firstFile;
+
+      await reloadSelectedFile(activeWorkspace, firstFile);
+    }
+
+    if (initial) {
+      setAgentEvents([
+        {
+          title: "Backend connected",
+          description: "PythonGPT API is available.",
+          type: "success",
+        },
+        {
+          title: "Workspace loaded",
+          description: `${activeWorkspace} loaded with ${paths.length} files.`,
+          type: "success",
+        },
+      ]);
+
+      setTerminalLines([
+        `PythonGPT ~/${activeWorkspace} $`,
+        `${paths.length} workspace files loaded.`,
+      ]);
+
+      return;
+    }
+
+    setAgentEvents((current) => [
+      ...current,
+      {
+        title: "Workspace switched",
+        description: `${activeWorkspace} loaded with ${paths.length} files.`,
+        type: "success",
+      },
+    ]);
+
+    setTerminalLines([
+      `PythonGPT ~/${activeWorkspace} $`,
+      `${paths.length} workspace files loaded.`,
+    ]);
+  };
+
+  useEffect(() => {
+    async function initialize() {
+      try {
+        const workspaceData = await getWorkspaces();
+
+        const names = normalizeWorkspaces(workspaceData);
+
+        setWorkspaces(names);
+
+        setConnected(true);
+
+        setAgentStatus("connected");
+
+        if (names.length === 0) {
+          setWorkspace("No workspace");
+
+          setAgentEvents([
+            {
+              title: "Backend connected",
+              description: "PythonGPT API is available.",
+              type: "success",
+            },
+            {
+              title: "No workspace found",
+              description: "Create a workspace to begin.",
+              type: "warning",
+            },
+          ]);
+
+          return;
+        }
+
+        await loadWorkspace(names[0], {
+          initial: true,
+        });
+      } catch (error) {
+        setConnected(false);
+
+        setWorkspace("Unavailable");
+
+        setAgentStatus("error");
+
+        setAgentEvents([
+          {
+            title: "Connection failed",
+            description: error.message,
+            type: "error",
+          },
+        ]);
+      }
+    }
+
+    initialize();
+  }, []);
+
+  const selectWorkspace = async (name) => {
+    if (name === workspace) {
+      return;
+    }
+
+    if (agentStatus === "running") {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace switch blocked",
+          description: "Wait for the active agent run to finish.",
+          type: "warning",
+        },
+      ]);
+
+      return;
+    }
+
+    try {
+      await loadWorkspace(name);
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace switch failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+    }
+  };
+
+  const createNewWorkspace = async (name) => {
+    if (agentStatus === "running") {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace creation blocked",
+          description: "Wait for the active agent run to finish.",
+          type: "warning",
+        },
+      ]);
+
+      return;
+    }
+
+    try {
+      const created = await createWorkspaceRequest(name);
+
+      const createdName = normalizeCreatedWorkspace(created, name);
+
+      const workspaceData = await getWorkspaces();
+
+      const names = normalizeWorkspaces(workspaceData);
+
+      setWorkspaces(names);
+
+      const targetWorkspace = names.includes(createdName)
+        ? createdName
+        : names.includes(name)
+          ? name
+          : createdName;
+
+      await loadWorkspace(targetWorkspace);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace created",
+          description: `${targetWorkspace} is ready.`,
+          type: "success",
+        },
+      ]);
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace creation failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+    }
   };
 
   const synchronizeCompletedRun = async (run) => {
@@ -255,10 +488,12 @@ function WorkspacePage() {
 
     setTerminalLines((current) => [...current, "PythonGPT run completed."]);
 
-    try {
-      await refreshFiles(workspace);
+    const activeWorkspace = workspaceRef.current;
 
-      await reloadSelectedFile(workspace, selectedFileRef.current);
+    try {
+      await refreshFiles(activeWorkspace);
+
+      await reloadSelectedFile(activeWorkspace, selectedFileRef.current);
     } catch {}
 
     setRunId((current) => (current === completedRunId ? null : current));
@@ -297,97 +532,6 @@ function WorkspacePage() {
 
     setRunId((current) => (current === failedRunId ? null : current));
   };
-
-  useEffect(() => {
-    async function loadWorkspace() {
-      try {
-        const workspaceData = await getWorkspaces();
-
-        const workspaces = normalizeWorkspaces(workspaceData);
-
-        setConnected(true);
-
-        setAgentStatus("connected");
-
-        if (workspaces.length === 0) {
-          setWorkspace("No workspace");
-
-          setAgentEvents([
-            {
-              title: "Backend connected",
-              description: "PythonGPT API is available.",
-              type: "success",
-            },
-            {
-              title: "No workspace found",
-              description: "Create a workspace to begin.",
-              type: "warning",
-            },
-          ]);
-
-          return;
-        }
-
-        const activeWorkspace = workspaces[0];
-
-        setWorkspace(activeWorkspace);
-
-        const { paths, explorerFiles } = await refreshFiles(activeWorkspace);
-
-        const expanded = {};
-
-        explorerFiles.forEach((item) => {
-          if (item.type === "folder") {
-            expanded[item.name] = true;
-          }
-        });
-
-        setExpandedFolders(expanded);
-
-        const firstFile = getFirstFilePath(explorerFiles);
-
-        if (firstFile) {
-          setSelectedFile(firstFile);
-
-          await reloadSelectedFile(activeWorkspace, firstFile);
-        }
-
-        setAgentEvents([
-          {
-            title: "Backend connected",
-            description: "PythonGPT API is available.",
-            type: "success",
-          },
-          {
-            title: "Workspace loaded",
-            description: `${activeWorkspace} loaded with ${paths.length} files.`,
-            type: "success",
-          },
-        ]);
-
-        setTerminalLines([
-          `PythonGPT ~/${activeWorkspace} $`,
-          `${paths.length} workspace files loaded.`,
-        ]);
-      } catch (error) {
-        setConnected(false);
-
-        setWorkspace("Unavailable");
-
-        setAgentStatus("error");
-
-        setAgentEvents([
-          {
-            title: "Connection failed",
-            description: error.message,
-            type: "error",
-          },
-        ]);
-      }
-    }
-
-    loadWorkspace();
-  }, []);
 
   useEffect(() => {
     if (!runId) {
@@ -531,10 +675,15 @@ function WorkspacePage() {
             tool === "edit_file" ||
             tool === "delete_file"
           ) {
-            try {
-              await refreshFiles(workspace);
+            const activeWorkspace = workspaceRef.current;
 
-              await reloadSelectedFile(workspace, selectedFileRef.current);
+            try {
+              await refreshFiles(activeWorkspace);
+
+              await reloadSelectedFile(
+                activeWorkspace,
+                selectedFileRef.current,
+              );
             } catch {}
           }
 
@@ -642,7 +791,7 @@ function WorkspacePage() {
     return () => {
       socket.close();
     };
-  }, [runId, workspace]);
+  }, [runId]);
 
   useEffect(() => {
     if (!runId) {
@@ -684,7 +833,7 @@ function WorkspacePage() {
 
       window.clearInterval(interval);
     };
-  }, [runId, workspace]);
+  }, [runId]);
 
   const toggleFolder = (folderName) => {
     setExpandedFolders((current) => ({
@@ -699,6 +848,8 @@ function WorkspacePage() {
     }
 
     setSelectedFile(path);
+
+    selectedFileRef.current = path;
 
     setCode("");
 
@@ -777,7 +928,6 @@ function WorkspacePage() {
     setAgentStatus("running");
 
     setPlan([]);
-
     setTestLines([]);
 
     setAgentEvents((current) => [
@@ -854,7 +1004,13 @@ function WorkspacePage() {
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
-      <TopBar workspace={workspace} connected={connected} />
+      <TopBar
+        workspace={workspace}
+        workspaces={workspaces}
+        connected={connected}
+        onSelectWorkspace={selectWorkspace}
+        onCreateWorkspace={createNewWorkspace}
+      />
 
       <div className="flex min-h-0 flex-1">
         <Explorer
