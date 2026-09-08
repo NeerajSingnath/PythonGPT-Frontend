@@ -93,6 +93,16 @@ export function saveWorkspaceFile(workspace, filePath, content) {
   });
 }
 
+export function runWorkspacePython(workspace, filePath, timeout = 10) {
+  return request(`/workspaces/${encodeURIComponent(workspace)}/run`, {
+    method: "POST",
+    body: JSON.stringify({
+      file: filePath,
+      timeout,
+    }),
+  });
+}
+
 export function createAgentRun({
   workspace,
   task,

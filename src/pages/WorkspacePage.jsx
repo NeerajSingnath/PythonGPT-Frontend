@@ -4,6 +4,7 @@ import {
   createAgentRun,
   createAgentRunSocket,
   createWorkspace as createWorkspaceRequest,
+  deleteWorkspace as deleteWorkspaceRequest,
   getAgentRun,
   getWorkspaceFile,
   getWorkspaceFiles,
@@ -249,6 +250,8 @@ function WorkspacePage() {
 
     setFiles([]);
     setSelectedFile(null);
+    selectedFileRef.current = null;
+
     setCode("");
     setPlan([]);
     setTestLines([]);
@@ -328,6 +331,8 @@ function WorkspacePage() {
         if (names.length === 0) {
           setWorkspace("No workspace");
 
+          workspaceRef.current = "No workspace";
+
           setAgentEvents([
             {
               title: "Backend connected",
@@ -351,6 +356,8 @@ function WorkspacePage() {
         setConnected(false);
 
         setWorkspace("Unavailable");
+
+        workspaceRef.current = "Unavailable";
 
         setAgentStatus("error");
 
@@ -449,6 +456,81 @@ function WorkspacePage() {
           type: "error",
         },
       ]);
+
+      throw error;
+    }
+  };
+
+  const deleteExistingWorkspace = async (name) => {
+    if (agentStatus === "running") {
+      const error = new Error("Wait for the active agent run to finish.");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace deletion blocked",
+          description: error.message,
+          type: "warning",
+        },
+      ]);
+
+      throw error;
+    }
+
+    try {
+      const deletingActiveWorkspace = name === workspaceRef.current;
+
+      await deleteWorkspaceRequest(name);
+
+      const workspaceData = await getWorkspaces();
+
+      const names = normalizeWorkspaces(workspaceData);
+
+      setWorkspaces(names);
+
+      if (names.length === 0) {
+        setWorkspace("No workspace");
+
+        workspaceRef.current = "No workspace";
+
+        setFiles([]);
+
+        setSelectedFile(null);
+
+        selectedFileRef.current = null;
+
+        setCode("");
+
+        setExpandedFolders({});
+
+        setPlan([]);
+
+        setTestLines([]);
+
+        setTerminalLines(["PythonGPT $", "No workspace selected."]);
+      } else if (deletingActiveWorkspace) {
+        await loadWorkspace(names[0]);
+      }
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace deleted",
+          description: `${name} was permanently deleted.`,
+          type: "success",
+        },
+      ]);
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Workspace deletion failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      throw error;
     }
   };
 
@@ -1010,6 +1092,7 @@ function WorkspacePage() {
         connected={connected}
         onSelectWorkspace={selectWorkspace}
         onCreateWorkspace={createNewWorkspace}
+        onDeleteWorkspace={deleteExistingWorkspace}
       />
 
       <div className="flex min-h-0 flex-1">
