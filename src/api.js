@@ -76,4 +76,29 @@ export function saveWorkspaceFile(workspace, filePath, content) {
   });
 }
 
+export function createAgentRun({
+  workspace,
+  task,
+  mode = "general",
+  planningRequired = true,
+  requiredQualityChecks = ["ruff"],
+}) {
+  return request("/agent/runs", {
+    method: "POST",
+    body: JSON.stringify({
+      workspace,
+      task,
+      mode,
+      planning_required: planningRequired,
+      required_quality_checks: requiredQualityChecks,
+    }),
+  });
+}
+
+export function createAgentRunSocket(runId) {
+  return new WebSocket(
+    `${WS_BASE_URL}/agent/runs/${encodeURIComponent(runId)}/stream`,
+  );
+}
+
 export { API_BASE_URL, WS_BASE_URL };

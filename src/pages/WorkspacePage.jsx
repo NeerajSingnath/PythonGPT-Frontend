@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import {
+  createAgentRun,
   getWorkspaceFile,
   getWorkspaceFiles,
   getWorkspaces,
@@ -93,6 +94,15 @@ function getFirstFilePath(files) {
   return null;
 }
 
+function workspaceReady(workspace) {
+  return (
+    workspace &&
+    workspace !== "Loading..." &&
+    workspace !== "Unavailable" &&
+    workspace !== "No workspace"
+  );
+}
+
 function WorkspacePage() {
   const [workspace, setWorkspace] = useState("Loading...");
 
@@ -112,13 +122,9 @@ function WorkspacePage() {
 
   const [agentStatus, setAgentStatus] = useState("idle");
 
-  const [plan, setPlan] = useState([
-    {
-      id: 1,
-      description: "Waiting for task",
-      status: "pending",
-    },
-  ]);
+  const [runId, setRunId] = useState(null);
+
+  const [plan, setPlan] = useState([]);
 
   const [agentEvents, setAgentEvents] = useState([
     {
@@ -242,12 +248,7 @@ function WorkspacePage() {
   };
 
   const openFile = async (path) => {
-    if (
-      !workspace ||
-      workspace === "Loading..." ||
-      workspace === "Unavailable" ||
-      workspace === "No workspace"
-    ) {
+    if (!workspaceReady(workspace)) {
       return;
     }
 
@@ -271,13 +272,7 @@ function WorkspacePage() {
   };
 
   const saveCurrentFile = async () => {
-    if (
-      !selectedFile ||
-      !workspace ||
-      workspace === "Loading..." ||
-      workspace === "Unavailable" ||
-      workspace === "No workspace"
-    ) {
+    if (!selectedFile || !workspaceReady(workspace)) {
       return;
     }
 
@@ -327,14 +322,16 @@ function WorkspacePage() {
     };
   }, [workspace, selectedFile, code]);
 
-  const sendPrompt = () => {
+  const sendPrompt = async () => {
     const task = prompt.trim();
 
-    if (!task || agentStatus === "running") {
+    if (!task || agentStatus === "running" || !workspaceReady(workspace)) {
       return;
     }
 
     setAgentStatus("running");
+
+    setPlan([]);
 
     setAgentEvents((current) => [
       ...current,
@@ -345,27 +342,56 @@ function WorkspacePage() {
       },
     ]);
 
-    setPlan([
-      {
-        id: 1,
-        description: "Create engineering plan",
-        status: "completed",
-      },
-      {
-        id: 2,
-        description: "Execute requested task",
-        status: "in_progress",
-      },
-      {
-        id: 3,
-        description: "Verify changes",
-        status: "pending",
-      },
+    setTerminalLines((current) => [
+      ...current,
+      `> ${task}`,
+      "Starting PythonGPT agent...",
     ]);
 
-    setTerminalLines((current) => [...current, `> ${task}`]);
-
     setPrompt("");
+
+    try {
+      const run = await createAgentRun({
+        workspace,
+        task,
+        mode: "general",
+        planningRequired: true,
+        requiredQualityChecks: ["ruff"],
+      });
+
+      const newRunId = run.id ?? run.run_id;
+
+      setRunId(newRunId);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Agent started",
+          description: newRunId
+            ? `Run ${newRunId}`
+            : "PythonGPT agent is running.",
+          type: "success",
+        },
+      ]);
+
+      setTerminalLines((current) => [
+        ...current,
+        newRunId ? `Run ID: ${newRunId}` : "Agent run created.",
+      ]);
+    } catch (error) {
+      setAgentStatus("error");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Failed to start agent",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      setTerminalLines((current) => [...current, `Error: ${error.message}`]);
+    }
   };
 
   const runCurrentFile = () => {
