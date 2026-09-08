@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { getWorkspaces } from "../api";
 import AgentPanel from "../components/layout/AgentPanel";
 import BottomPanel from "../components/layout/BottomPanel";
 import EditorPanel from "../components/layout/EditorPanel";
@@ -70,10 +71,18 @@ ruff
 `,
 };
 
-function WorkspacePage() {
-  const [workspace] = useState("demo_project");
+function normalizeWorkspaces(data) {
+  const items = Array.isArray(data) ? data : (data?.workspaces ?? []);
 
-  const [connected] = useState(true);
+  return items
+    .map((item) => (typeof item === "string" ? item : item?.name))
+    .filter(Boolean);
+}
+
+function WorkspacePage() {
+  const [workspace, setWorkspace] = useState("Loading...");
+
+  const [connected, setConnected] = useState(false);
 
   const [selectedFile, setSelectedFile] = useState("app/main.py");
 
@@ -88,16 +97,11 @@ function WorkspacePage() {
 
   const [bottomTab, setBottomTab] = useState("terminal");
 
-  const [agentStatus, setAgentStatus] = useState("connected");
+  const [agentStatus, setAgentStatus] = useState("idle");
 
   const [plan, setPlan] = useState([
     {
       id: 1,
-      description: "Inspect repository",
-      status: "completed",
-    },
-    {
-      id: 2,
       description: "Waiting for task",
       status: "pending",
     },
@@ -105,23 +109,86 @@ function WorkspacePage() {
 
   const [agentEvents, setAgentEvents] = useState([
     {
-      title: "System ready",
-      description: "Connected to PythonGPT backend.",
-      type: "success",
-    },
-    {
-      title: "Workspace loaded",
-      description: "demo_project is ready.",
+      title: "Connecting",
+      description: "Connecting to PythonGPT backend.",
       type: "info",
     },
   ]);
 
   const [terminalLines, setTerminalLines] = useState([
-    "pythonGPT ~/demo_project $",
+    "PythonGPT $",
     "Terminal ready.",
   ]);
 
-  const [testLines] = useState(["✓ 25 tests passed"]);
+  const [testLines] = useState([]);
+
+  useEffect(() => {
+    async function loadWorkspaces() {
+      try {
+        const data = await getWorkspaces();
+
+        const workspaces = normalizeWorkspaces(data);
+
+        setConnected(true);
+        setAgentStatus("connected");
+
+        if (workspaces.length > 0) {
+          const activeWorkspace = workspaces[0];
+
+          setWorkspace(activeWorkspace);
+
+          setAgentEvents([
+            {
+              title: "Backend connected",
+              description: "PythonGPT API is available.",
+              type: "success",
+            },
+            {
+              title: "Workspace loaded",
+              description: `${activeWorkspace} is ready.`,
+              type: "success",
+            },
+          ]);
+
+          setTerminalLines([
+            `PythonGPT ~/${activeWorkspace} $`,
+            "Terminal ready.",
+          ]);
+
+          return;
+        }
+
+        setWorkspace("No workspace");
+
+        setAgentEvents([
+          {
+            title: "Backend connected",
+            description: "PythonGPT API is available.",
+            type: "success",
+          },
+          {
+            title: "No workspace found",
+            description: "Create a workspace to begin.",
+            type: "warning",
+          },
+        ]);
+      } catch (error) {
+        setConnected(false);
+        setWorkspace("Unavailable");
+        setAgentStatus("error");
+
+        setAgentEvents([
+          {
+            title: "Connection failed",
+            description: error.message,
+            type: "error",
+          },
+        ]);
+      }
+    }
+
+    loadWorkspaces();
+  }, []);
 
   const toggleFolder = (folderName) => {
     setExpandedFolders((current) => ({

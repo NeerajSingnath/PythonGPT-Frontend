@@ -19,9 +19,7 @@ async function request(path, options = {}) {
       const data = await response.json();
 
       message = data.detail ?? data.message ?? message;
-    } catch {
-      //
-    }
+    } catch {}
 
     throw new Error(message);
   }
@@ -35,6 +33,10 @@ async function request(path, options = {}) {
 
 export function getWorkspaces() {
   return request("/workspaces");
+}
+
+export function getWorkspaceFiles(workspace) {
+  return request(`/workspaces/${encodeURIComponent(workspace)}/files`);
 }
 
 export { API_BASE_URL, WS_BASE_URL };
