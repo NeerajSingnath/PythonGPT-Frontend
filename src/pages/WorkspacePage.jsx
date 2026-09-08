@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import {
   createAgentRun,
   createAgentRunSocket,
+  createWorkspaceFile,
   createWorkspace as createWorkspaceRequest,
+  deleteWorkspaceFile,
   deleteWorkspace as deleteWorkspaceRequest,
   getAgentRun,
   getWorkspaceFile,
@@ -60,6 +62,13 @@ function normalizeCreatedWorkspace(data, fallbackName) {
   }
 
   return data?.name ?? data?.workspace?.name ?? fallbackName;
+}
+
+function normalizeNewFilePath(path) {
+  return path
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/^\.\/+/, "");
 }
 
 function buildExplorerFiles(paths) {
@@ -560,6 +569,187 @@ function WorkspacePage() {
         ...current,
         {
           title: "Workspace deletion failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      throw error;
+    }
+  };
+
+  const createNewFile = async (rawPath) => {
+    if (!workspaceReady(workspace)) {
+      const error = new Error("No workspace selected.");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File creation failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      throw error;
+    }
+
+    if (agentStatus === "running" || fileRunning) {
+      const error = new Error("Wait for the active execution to finish.");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File creation blocked",
+          description: error.message,
+          type: "warning",
+        },
+      ]);
+
+      throw error;
+    }
+
+    const filePath = normalizeNewFilePath(rawPath);
+
+    if (!filePath) {
+      throw new Error("File path cannot be empty.");
+    }
+
+    try {
+      const fileData = await getWorkspaceFiles(workspace);
+
+      const existingPaths = normalizeFilePaths(fileData);
+
+      if (existingPaths.includes(filePath)) {
+        throw new Error(`File already exists: ${filePath}`);
+      }
+
+      if (selectedFile) {
+        await saveWorkspaceFile(workspace, selectedFile, code);
+      }
+
+      await createWorkspaceFile(workspace, filePath, "");
+
+      const { explorerFiles } = await refreshFiles(workspace);
+
+      const topFolder = filePath.includes("/") ? filePath.split("/")[0] : null;
+
+      if (topFolder) {
+        setExpandedFolders((current) => ({
+          ...current,
+          [topFolder]: true,
+        }));
+      }
+
+      setSelectedFile(filePath);
+
+      selectedFileRef.current = filePath;
+
+      setCode("");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File created",
+          description: filePath,
+          type: "success",
+        },
+      ]);
+
+      setTerminalLines((current) => [...current, `Created ${filePath}`]);
+
+      if (explorerFiles.length === 0) {
+        setFiles([]);
+      }
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File creation failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      throw error;
+    }
+  };
+
+  const deleteExistingFile = async (filePath) => {
+    if (!workspaceReady(workspace)) {
+      const error = new Error("No workspace selected.");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File deletion failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      throw error;
+    }
+
+    if (agentStatus === "running" || fileRunning) {
+      const error = new Error("Wait for the active execution to finish.");
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File deletion blocked",
+          description: error.message,
+          type: "warning",
+        },
+      ]);
+
+      throw error;
+    }
+
+    try {
+      const deletingSelected = selectedFileRef.current === filePath;
+
+      await deleteWorkspaceFile(workspace, filePath);
+
+      const { paths, explorerFiles } = await refreshFiles(workspace);
+
+      if (deletingSelected) {
+        const nextFile = getFirstFilePath(explorerFiles);
+
+        if (nextFile) {
+          setSelectedFile(nextFile);
+
+          selectedFileRef.current = nextFile;
+
+          await reloadSelectedFile(workspace, nextFile);
+        } else {
+          setSelectedFile(null);
+
+          selectedFileRef.current = null;
+
+          setCode("");
+        }
+      }
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File deleted",
+          description: filePath,
+          type: "success",
+        },
+      ]);
+
+      setTerminalLines((current) => [
+        ...current,
+        `Deleted ${filePath}`,
+        `${paths.length} workspace files remaining.`,
+      ]);
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File deletion failed",
           description: error.message,
           type: "error",
         },
@@ -1218,6 +1408,8 @@ function WorkspacePage() {
           expandedFolders={expandedFolders}
           onToggleFolder={toggleFolder}
           onOpenFile={openFile}
+          onCreateFile={createNewFile}
+          onDeleteFile={deleteExistingFile}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">

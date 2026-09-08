@@ -5,7 +5,7 @@ function EditorPanel({ selectedFile, code, onChange, onRun }) {
   const language = selectedFile?.endsWith(".py") ? "python" : "plaintext";
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-zinc-800 bg-zinc-950">
         <div className="flex h-full items-center gap-2 border-r border-zinc-800 bg-zinc-900 px-4 text-xs text-zinc-300">
           <FileCode2 size={13} className="text-zinc-500" />
@@ -21,6 +21,7 @@ function EditorPanel({ selectedFile, code, onChange, onRun }) {
 
         <div className="ml-auto flex items-center gap-1 px-2">
           <button
+            type="button"
             onClick={onRun}
             disabled={!selectedFile}
             className="rounded p-1.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-30"
@@ -30,7 +31,7 @@ function EditorPanel({ selectedFile, code, onChange, onRun }) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         {selectedFile ? (
           <Editor
             height="100%"
