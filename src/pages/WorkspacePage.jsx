@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { getWorkspaceFile, getWorkspaceFiles, getWorkspaces } from "../api";
+import {
+  getWorkspaceFile,
+  getWorkspaceFiles,
+  getWorkspaces,
+  saveWorkspaceFile,
+} from "../api";
 import AgentPanel from "../components/layout/AgentPanel";
 import BottomPanel from "../components/layout/BottomPanel";
 import EditorPanel from "../components/layout/EditorPanel";
@@ -264,6 +269,63 @@ function WorkspacePage() {
       ]);
     }
   };
+
+  const saveCurrentFile = async () => {
+    if (
+      !selectedFile ||
+      !workspace ||
+      workspace === "Loading..." ||
+      workspace === "Unavailable" ||
+      workspace === "No workspace"
+    ) {
+      return;
+    }
+
+    try {
+      await saveWorkspaceFile(workspace, selectedFile, code);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File saved",
+          description: selectedFile,
+          type: "success",
+        },
+      ]);
+
+      setTerminalLines((current) => [...current, `Saved ${selectedFile}`]);
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Save failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      const saveShortcut =
+        (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s";
+
+      if (!saveShortcut) {
+        return;
+      }
+
+      event.preventDefault();
+
+      saveCurrentFile();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [workspace, selectedFile, code]);
 
   const sendPrompt = () => {
     const task = prompt.trim();
