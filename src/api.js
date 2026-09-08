@@ -95,6 +95,10 @@ export function createAgentRun({
   });
 }
 
+export function getAgentRun(runId) {
+  return request(`/agent/runs/${encodeURIComponent(runId)}`);
+}
+
 export function createAgentRunSocket(runId) {
   return new WebSocket(
     `${WS_BASE_URL}/agent/runs/${encodeURIComponent(runId)}/stream`,

@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   createAgentRun,
+  createAgentRunSocket,
+  getAgentRun,
   getWorkspaceFile,
   getWorkspaceFiles,
   getWorkspaces,
   saveWorkspaceFile,
 } from "../api";
+
 import AgentPanel from "../components/layout/AgentPanel";
 import BottomPanel from "../components/layout/BottomPanel";
 import EditorPanel from "../components/layout/EditorPanel";
@@ -103,6 +106,48 @@ function workspaceReady(workspace) {
   );
 }
 
+function getAgentPayload(event) {
+  return event?.data ?? event?.payload ?? event ?? {};
+}
+
+function getToolOutput(result) {
+  const lines = [];
+
+  if (result?.stdout) {
+    lines.push(...result.stdout.split("\n").filter(Boolean));
+  }
+
+  if (result?.stderr) {
+    lines.push(...result.stderr.split("\n").filter(Boolean));
+  }
+
+  return lines;
+}
+
+function getLatestTestOutput(history) {
+  if (!Array.isArray(history)) {
+    return [];
+  }
+
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const event = history[index];
+
+    if (event?.type !== "tool_result") {
+      continue;
+    }
+
+    const data = event.data ?? {};
+
+    if (data.tool !== "run_tests") {
+      continue;
+    }
+
+    return getToolOutput(data.result ?? {});
+  }
+
+  return [];
+}
+
 function WorkspacePage() {
   const [workspace, setWorkspace] = useState("Loading...");
 
@@ -139,7 +184,119 @@ function WorkspacePage() {
     "Terminal ready.",
   ]);
 
-  const [testLines] = useState([]);
+  const [testLines, setTestLines] = useState([]);
+
+  const handledRuns = useRef(new Set());
+
+  const selectedFileRef = useRef(selectedFile);
+
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
+
+  const refreshFiles = async (activeWorkspace) => {
+    const fileData = await getWorkspaceFiles(activeWorkspace);
+
+    const paths = normalizeFilePaths(fileData);
+
+    const explorerFiles = buildExplorerFiles(paths);
+
+    setFiles(explorerFiles);
+
+    return {
+      paths,
+      explorerFiles,
+    };
+  };
+
+  const reloadSelectedFile = async (activeWorkspace, filePath) => {
+    if (!filePath) {
+      return;
+    }
+
+    const data = await getWorkspaceFile(activeWorkspace, filePath);
+
+    setCode(normalizeFileContent(data));
+  };
+
+  const synchronizeCompletedRun = async (run) => {
+    const completedRunId = run?.id ?? runId;
+
+    if (completedRunId && handledRuns.current.has(completedRunId)) {
+      return;
+    }
+
+    if (completedRunId) {
+      handledRuns.current.add(completedRunId);
+    }
+
+    if (Array.isArray(run?.plan) && run.plan.length > 0) {
+      setPlan(run.plan);
+    }
+
+    const finalTestOutput = getLatestTestOutput(run?.history);
+
+    if (finalTestOutput.length > 0) {
+      setTestLines(finalTestOutput);
+    }
+
+    setAgentStatus("connected");
+
+    setAgentEvents((current) => [
+      ...current,
+      {
+        title: "Run completed",
+        description: run?.tests_verified
+          ? "Task completed and tests verified."
+          : "PythonGPT finished the task.",
+        type: "success",
+      },
+    ]);
+
+    setTerminalLines((current) => [...current, "PythonGPT run completed."]);
+
+    try {
+      await refreshFiles(workspace);
+
+      await reloadSelectedFile(workspace, selectedFileRef.current);
+    } catch {}
+
+    setRunId((current) => (current === completedRunId ? null : current));
+  };
+
+  const synchronizeFailedRun = (run) => {
+    const failedRunId = run?.id ?? runId;
+
+    if (failedRunId && handledRuns.current.has(failedRunId)) {
+      return;
+    }
+
+    if (failedRunId) {
+      handledRuns.current.add(failedRunId);
+    }
+
+    if (Array.isArray(run?.plan) && run.plan.length > 0) {
+      setPlan(run.plan);
+    }
+
+    setAgentStatus("error");
+
+    setAgentEvents((current) => [
+      ...current,
+      {
+        title: "Run failed",
+        description: run?.error ?? "PythonGPT agent failed.",
+        type: "error",
+      },
+    ]);
+
+    setTerminalLines((current) => [
+      ...current,
+      `Run failed: ${run?.error ?? "Unknown error"}`,
+    ]);
+
+    setRunId((current) => (current === failedRunId ? null : current));
+  };
 
   useEffect(() => {
     async function loadWorkspace() {
@@ -149,6 +306,7 @@ function WorkspacePage() {
         const workspaces = normalizeWorkspaces(workspaceData);
 
         setConnected(true);
+
         setAgentStatus("connected");
 
         if (workspaces.length === 0) {
@@ -174,13 +332,7 @@ function WorkspacePage() {
 
         setWorkspace(activeWorkspace);
 
-        const fileData = await getWorkspaceFiles(activeWorkspace);
-
-        const paths = normalizeFilePaths(fileData);
-
-        const explorerFiles = buildExplorerFiles(paths);
-
-        setFiles(explorerFiles);
+        const { paths, explorerFiles } = await refreshFiles(activeWorkspace);
 
         const expanded = {};
 
@@ -197,12 +349,7 @@ function WorkspacePage() {
         if (firstFile) {
           setSelectedFile(firstFile);
 
-          const firstFileData = await getWorkspaceFile(
-            activeWorkspace,
-            firstFile,
-          );
-
-          setCode(normalizeFileContent(firstFileData));
+          await reloadSelectedFile(activeWorkspace, firstFile);
         }
 
         setAgentEvents([
@@ -224,7 +371,9 @@ function WorkspacePage() {
         ]);
       } catch (error) {
         setConnected(false);
+
         setWorkspace("Unavailable");
+
         setAgentStatus("error");
 
         setAgentEvents([
@@ -240,6 +389,303 @@ function WorkspacePage() {
     loadWorkspace();
   }, []);
 
+  useEffect(() => {
+    if (!runId) {
+      return;
+    }
+
+    const socket = createAgentRunSocket(runId);
+
+    socket.onopen = () => {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Live connection established",
+          description: "Receiving PythonGPT activity.",
+          type: "success",
+        },
+      ]);
+    };
+
+    socket.onmessage = async (socketEvent) => {
+      let message;
+
+      try {
+        message = JSON.parse(socketEvent.data);
+      } catch {
+        return;
+      }
+
+      if (message.type === "run_snapshot") {
+        const snapshot = message.run ?? message.snapshot ?? message.data ?? {};
+
+        if (Array.isArray(snapshot.plan) && snapshot.plan.length > 0) {
+          setPlan(snapshot.plan);
+        }
+
+        if (snapshot.status === "completed") {
+          await synchronizeCompletedRun(snapshot);
+        }
+
+        if (snapshot.status === "failed") {
+          synchronizeFailedRun(snapshot);
+        }
+
+        return;
+      }
+
+      if (message.type === "agent_event") {
+        const agentEvent = message.event ?? {};
+
+        const eventType = agentEvent.type;
+
+        const payload = getAgentPayload(agentEvent);
+
+        if (eventType === "plan_created") {
+          const steps = payload.steps ?? [];
+
+          if (steps.length > 0) {
+            setPlan(steps);
+          }
+
+          setAgentEvents((current) => [
+            ...current,
+            {
+              title: "Plan created",
+              description: `${steps.length} engineering steps planned.`,
+              type: "info",
+            },
+          ]);
+
+          return;
+        }
+
+        if (eventType === "plan_updated") {
+          const step = payload.step;
+
+          if (step) {
+            setPlan((current) => {
+              const exists = current.some((item) => item.id === step.id);
+
+              if (!exists) {
+                return [...current, step];
+              }
+
+              return current.map((item) =>
+                item.id === step.id
+                  ? {
+                      ...item,
+                      ...step,
+                    }
+                  : item,
+              );
+            });
+
+            if (step.status === "completed") {
+              setAgentEvents((current) => [
+                ...current,
+                {
+                  title: "Plan step completed",
+                  description: step.description,
+                  type: "success",
+                },
+              ]);
+            }
+          }
+
+          return;
+        }
+
+        if (eventType === "tool_result") {
+          const tool = payload.tool ?? "tool";
+
+          const result = payload.result ?? {};
+
+          const success = result.success !== false;
+
+          setAgentEvents((current) => [
+            ...current,
+            {
+              title: success ? `${tool} completed` : `${tool} failed`,
+              description: result.path ?? result.command?.join?.(" ") ?? "",
+              type: success ? "success" : "error",
+            },
+          ]);
+
+          const output = getToolOutput(result);
+
+          if (tool === "run_tests") {
+            setTestLines(
+              output.length
+                ? output
+                : [success ? "Tests passed." : "Tests failed."],
+            );
+          }
+
+          if (output.length > 0) {
+            setTerminalLines((current) => [...current, ...output]);
+          }
+
+          if (
+            tool === "write_file" ||
+            tool === "edit_file" ||
+            tool === "delete_file"
+          ) {
+            try {
+              await refreshFiles(workspace);
+
+              await reloadSelectedFile(workspace, selectedFileRef.current);
+            } catch {}
+          }
+
+          return;
+        }
+
+        if (eventType === "action_rejected") {
+          setAgentEvents((current) => [
+            ...current,
+            {
+              title: "Action rejected",
+              description: payload.reason ?? "Agent action was rejected.",
+              type: "warning",
+            },
+          ]);
+
+          return;
+        }
+
+        if (eventType === "plan_update_rejected") {
+          setAgentEvents((current) => [
+            ...current,
+            {
+              title: "Plan evidence rejected",
+              description:
+                payload.reason ?? "Plan step could not be completed yet.",
+              type: "warning",
+            },
+          ]);
+
+          return;
+        }
+
+        if (eventType === "finish_rejected") {
+          setAgentEvents((current) => [
+            ...current,
+            {
+              title: "Verification required",
+              description:
+                payload.reason ??
+                "PythonGPT must complete verification before finishing.",
+              type: "warning",
+            },
+          ]);
+
+          return;
+        }
+
+        if (eventType === "finished") {
+          setAgentEvents((current) => [
+            ...current,
+            {
+              title: "Agent finishing",
+              description: payload.summary ?? "All agent steps completed.",
+              type: "success",
+            },
+          ]);
+        }
+
+        return;
+      }
+
+      if (message.type === "run_completed") {
+        try {
+          const run = await getAgentRun(runId);
+
+          await synchronizeCompletedRun(run);
+        } catch {
+          await synchronizeCompletedRun({
+            id: runId,
+            status: "completed",
+            tests_verified: message.tests_verified,
+          });
+        }
+
+        return;
+      }
+
+      if (message.type === "run_failed") {
+        try {
+          const run = await getAgentRun(runId);
+
+          synchronizeFailedRun(run);
+        } catch {
+          synchronizeFailedRun({
+            id: runId,
+            status: "failed",
+            error: message.error,
+          });
+        }
+      }
+    };
+
+    socket.onerror = () => {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Live connection interrupted",
+          description: "Waiting for backend synchronization.",
+          type: "warning",
+        },
+      ]);
+    };
+
+    return () => {
+      socket.close();
+    };
+  }, [runId, workspace]);
+
+  useEffect(() => {
+    if (!runId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const synchronizeRun = async () => {
+      try {
+        const run = await getAgentRun(runId);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (Array.isArray(run.plan) && run.plan.length > 0) {
+          setPlan(run.plan);
+        }
+
+        if (run.status === "completed") {
+          await synchronizeCompletedRun(run);
+
+          return;
+        }
+
+        if (run.status === "failed") {
+          synchronizeFailedRun(run);
+        }
+      } catch {}
+    };
+
+    synchronizeRun();
+
+    const interval = window.setInterval(synchronizeRun, 2000);
+
+    return () => {
+      cancelled = true;
+
+      window.clearInterval(interval);
+    };
+  }, [runId, workspace]);
+
   const toggleFolder = (folderName) => {
     setExpandedFolders((current) => ({
       ...current,
@@ -253,12 +699,11 @@ function WorkspacePage() {
     }
 
     setSelectedFile(path);
+
     setCode("");
 
     try {
-      const data = await getWorkspaceFile(workspace, path);
-
-      setCode(normalizeFileContent(data));
+      await reloadSelectedFile(workspace, path);
     } catch (error) {
       setAgentEvents((current) => [
         ...current,
@@ -333,6 +778,8 @@ function WorkspacePage() {
 
     setPlan([]);
 
+    setTestLines([]);
+
     setAgentEvents((current) => [
       ...current,
       {
@@ -361,23 +808,24 @@ function WorkspacePage() {
 
       const newRunId = run.id ?? run.run_id;
 
+      if (!newRunId) {
+        throw new Error("Backend did not return a run ID.");
+      }
+
+      handledRuns.current.delete(newRunId);
+
       setRunId(newRunId);
 
       setAgentEvents((current) => [
         ...current,
         {
           title: "Agent started",
-          description: newRunId
-            ? `Run ${newRunId}`
-            : "PythonGPT agent is running.",
+          description: `Run ${newRunId}`,
           type: "success",
         },
       ]);
 
-      setTerminalLines((current) => [
-        ...current,
-        newRunId ? `Run ID: ${newRunId}` : "Agent run created.",
-      ]);
+      setTerminalLines((current) => [...current, `Run ID: ${newRunId}`]);
     } catch (error) {
       setAgentStatus("error");
 
