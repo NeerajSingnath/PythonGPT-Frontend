@@ -1,75 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { getWorkspaces } from "../api";
+import { getWorkspaceFiles, getWorkspaces } from "../api";
 import AgentPanel from "../components/layout/AgentPanel";
 import BottomPanel from "../components/layout/BottomPanel";
 import EditorPanel from "../components/layout/EditorPanel";
 import Explorer from "../components/layout/Explorer";
 import TopBar from "../components/layout/TopBar";
-
-const files = [
-  {
-    name: "app",
-    type: "folder",
-    children: [
-      {
-        name: "main.py",
-        type: "file",
-      },
-      {
-        name: "agent.py",
-        type: "file",
-      },
-    ],
-  },
-  {
-    name: "tests",
-    type: "folder",
-    children: [
-      {
-        name: "test_main.py",
-        type: "file",
-      },
-    ],
-  },
-  {
-    name: "requirements.txt",
-    type: "file",
-  },
-];
-
-const fileContents = {
-  "app/main.py": `from fastapi import FastAPI
-
-app = FastAPI()
-
-
-@app.get("/")
-async def root():
-    return {"message": "Hello PythonGPT"}
-`,
-
-  "app/agent.py": `class PythonGPTAgent:
-    def __init__(self):
-        self.name = "PythonGPT"
-
-    def run(self, task: str):
-        return {
-            "task": task,
-            "status": "running",
-        }
-`,
-
-  "tests/test_main.py": `def test_example():
-    assert True
-`,
-
-  "requirements.txt": `fastapi
-uvicorn
-pytest
-ruff
-`,
-};
 
 function normalizeWorkspaces(data) {
   const items = Array.isArray(data) ? data : (data?.workspaces ?? []);
@@ -79,19 +15,83 @@ function normalizeWorkspaces(data) {
     .filter(Boolean);
 }
 
+function normalizeFilePaths(data) {
+  const items = Array.isArray(data) ? data : (data?.files ?? []);
+
+  return items
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+
+      return item?.path ?? item?.name;
+    })
+    .filter(Boolean)
+    .map((path) => path.replaceAll("\\", "/"));
+}
+
+function buildExplorerFiles(paths) {
+  const rootFiles = [];
+  const folders = new Map();
+
+  for (const path of paths) {
+    const parts = path.split("/");
+
+    if (parts.length === 1) {
+      rootFiles.push({
+        name: path,
+        type: "file",
+      });
+
+      continue;
+    }
+
+    const folderName = parts[0];
+    const childName = parts.slice(1).join("/");
+
+    if (!folders.has(folderName)) {
+      folders.set(folderName, {
+        name: folderName,
+        type: "folder",
+        children: [],
+      });
+    }
+
+    folders.get(folderName).children.push({
+      name: childName,
+      type: "file",
+    });
+  }
+
+  return [...Array.from(folders.values()), ...rootFiles];
+}
+
+function getFirstFilePath(files) {
+  for (const item of files) {
+    if (item.type === "file") {
+      return item.name;
+    }
+
+    if (item.type === "folder" && item.children?.length) {
+      return `${item.name}/${item.children[0].name}`;
+    }
+  }
+
+  return null;
+}
+
 function WorkspacePage() {
   const [workspace, setWorkspace] = useState("Loading...");
 
   const [connected, setConnected] = useState(false);
 
-  const [selectedFile, setSelectedFile] = useState("app/main.py");
+  const [files, setFiles] = useState([]);
 
-  const [expandedFolders, setExpandedFolders] = useState({
-    app: true,
-    tests: true,
-  });
+  const [selectedFile, setSelectedFile] = useState(null);
 
-  const [code, setCode] = useState(fileContents["app/main.py"]);
+  const [expandedFolders, setExpandedFolders] = useState({});
+
+  const [code, setCode] = useState("");
 
   const [prompt, setPrompt] = useState("");
 
@@ -123,19 +123,17 @@ function WorkspacePage() {
   const [testLines] = useState([]);
 
   useEffect(() => {
-    async function loadWorkspaces() {
+    async function loadWorkspace() {
       try {
-        const data = await getWorkspaces();
+        const workspaceData = await getWorkspaces();
 
-        const workspaces = normalizeWorkspaces(data);
+        const workspaces = normalizeWorkspaces(workspaceData);
 
         setConnected(true);
         setAgentStatus("connected");
 
-        if (workspaces.length > 0) {
-          const activeWorkspace = workspaces[0];
-
-          setWorkspace(activeWorkspace);
+        if (workspaces.length === 0) {
+          setWorkspace("No workspace");
 
           setAgentEvents([
             {
@@ -144,21 +142,40 @@ function WorkspacePage() {
               type: "success",
             },
             {
-              title: "Workspace loaded",
-              description: `${activeWorkspace} is ready.`,
-              type: "success",
+              title: "No workspace found",
+              description: "Create a workspace to begin.",
+              type: "warning",
             },
-          ]);
-
-          setTerminalLines([
-            `PythonGPT ~/${activeWorkspace} $`,
-            "Terminal ready.",
           ]);
 
           return;
         }
 
-        setWorkspace("No workspace");
+        const activeWorkspace = workspaces[0];
+
+        setWorkspace(activeWorkspace);
+
+        const fileData = await getWorkspaceFiles(activeWorkspace);
+
+        const paths = normalizeFilePaths(fileData);
+
+        const explorerFiles = buildExplorerFiles(paths);
+
+        setFiles(explorerFiles);
+
+        const expanded = {};
+
+        explorerFiles.forEach((item) => {
+          if (item.type === "folder") {
+            expanded[item.name] = true;
+          }
+        });
+
+        setExpandedFolders(expanded);
+
+        const firstFile = getFirstFilePath(explorerFiles);
+
+        setSelectedFile(firstFile);
 
         setAgentEvents([
           {
@@ -167,10 +184,15 @@ function WorkspacePage() {
             type: "success",
           },
           {
-            title: "No workspace found",
-            description: "Create a workspace to begin.",
-            type: "warning",
+            title: "Workspace loaded",
+            description: `${activeWorkspace} loaded with ${paths.length} files.`,
+            type: "success",
           },
+        ]);
+
+        setTerminalLines([
+          `PythonGPT ~/${activeWorkspace} $`,
+          `${paths.length} workspace files loaded.`,
         ]);
       } catch (error) {
         setConnected(false);
@@ -187,7 +209,7 @@ function WorkspacePage() {
       }
     }
 
-    loadWorkspaces();
+    loadWorkspace();
   }, []);
 
   const toggleFolder = (folderName) => {
@@ -199,8 +221,7 @@ function WorkspacePage() {
 
   const openFile = (path) => {
     setSelectedFile(path);
-
-    setCode(fileContents[path] ?? "");
+    setCode("");
   };
 
   const sendPrompt = () => {
