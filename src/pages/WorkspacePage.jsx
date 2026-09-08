@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getWorkspaceFiles, getWorkspaces } from "../api";
+import { getWorkspaceFile, getWorkspaceFiles, getWorkspaces } from "../api";
 import AgentPanel from "../components/layout/AgentPanel";
 import BottomPanel from "../components/layout/BottomPanel";
 import EditorPanel from "../components/layout/EditorPanel";
@@ -28,6 +28,14 @@ function normalizeFilePaths(data) {
     })
     .filter(Boolean)
     .map((path) => path.replaceAll("\\", "/"));
+}
+
+function normalizeFileContent(data) {
+  if (typeof data === "string") {
+    return data;
+  }
+
+  return data?.content ?? "";
 }
 
 function buildExplorerFiles(paths) {
@@ -175,7 +183,16 @@ function WorkspacePage() {
 
         const firstFile = getFirstFilePath(explorerFiles);
 
-        setSelectedFile(firstFile);
+        if (firstFile) {
+          setSelectedFile(firstFile);
+
+          const firstFileData = await getWorkspaceFile(
+            activeWorkspace,
+            firstFile,
+          );
+
+          setCode(normalizeFileContent(firstFileData));
+        }
 
         setAgentEvents([
           {
@@ -219,9 +236,33 @@ function WorkspacePage() {
     }));
   };
 
-  const openFile = (path) => {
+  const openFile = async (path) => {
+    if (
+      !workspace ||
+      workspace === "Loading..." ||
+      workspace === "Unavailable" ||
+      workspace === "No workspace"
+    ) {
+      return;
+    }
+
     setSelectedFile(path);
     setCode("");
+
+    try {
+      const data = await getWorkspaceFile(workspace, path);
+
+      setCode(normalizeFileContent(data));
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Failed to open file",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+    }
   };
 
   const sendPrompt = () => {

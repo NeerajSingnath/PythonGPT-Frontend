@@ -39,4 +39,15 @@ export function getWorkspaceFiles(workspace) {
   return request(`/workspaces/${encodeURIComponent(workspace)}/files`);
 }
 
+export function getWorkspaceFile(workspace, filePath) {
+  const encodedWorkspace = encodeURIComponent(workspace);
+
+  const encodedPath = filePath
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+  return request(`/workspaces/${encodedWorkspace}/files/${encodedPath}`);
+}
+
 export { API_BASE_URL, WS_BASE_URL };
