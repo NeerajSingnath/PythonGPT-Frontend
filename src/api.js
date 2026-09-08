@@ -60,6 +60,12 @@ export function createWorkspace(name) {
   });
 }
 
+export function deleteWorkspace(name) {
+  return request(`/workspaces/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
 export function getWorkspaceFiles(workspace) {
   return request(`/workspaces/${encodeURIComponent(workspace)}/files`);
 }
