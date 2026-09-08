@@ -93,6 +93,21 @@ export function saveWorkspaceFile(workspace, filePath, content) {
   });
 }
 
+export function createWorkspaceFile(workspace, filePath, content = "") {
+  return saveWorkspaceFile(workspace, filePath, content);
+}
+
+export function deleteWorkspaceFile(workspace, filePath) {
+  const { encodedWorkspace, encodedPath } = encodeWorkspacePath(
+    workspace,
+    filePath,
+  );
+
+  return request(`/workspaces/${encodedWorkspace}/files/${encodedPath}`, {
+    method: "DELETE",
+  });
+}
+
 export function runWorkspacePython(workspace, filePath, timeout = 10) {
   return request(`/workspaces/${encodeURIComponent(workspace)}/run`, {
     method: "POST",

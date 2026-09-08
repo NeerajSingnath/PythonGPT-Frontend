@@ -9,6 +9,7 @@ import {
   getWorkspaceFile,
   getWorkspaceFiles,
   getWorkspaces,
+  runWorkspacePython,
   saveWorkspaceFile,
 } from "../api";
 
@@ -139,6 +140,34 @@ function getToolOutput(result) {
   return lines;
 }
 
+function getExecutionOutput(result) {
+  const lines = [];
+
+  if (result?.stdout) {
+    lines.push(
+      ...result.stdout
+        .replaceAll("\r\n", "\n")
+        .split("\n")
+        .filter(
+          (line, index, items) => line !== "" || index !== items.length - 1,
+        ),
+    );
+  }
+
+  if (result?.stderr) {
+    lines.push(
+      ...result.stderr
+        .replaceAll("\r\n", "\n")
+        .split("\n")
+        .filter(
+          (line, index, items) => line !== "" || index !== items.length - 1,
+        ),
+    );
+  }
+
+  return lines;
+}
+
 function getLatestTestOutput(history) {
   if (!Array.isArray(history)) {
     return [];
@@ -183,6 +212,8 @@ function WorkspacePage() {
   const [bottomTab, setBottomTab] = useState("terminal");
 
   const [agentStatus, setAgentStatus] = useState("idle");
+
+  const [fileRunning, setFileRunning] = useState(false);
 
   const [runId, setRunId] = useState(null);
 
@@ -249,7 +280,9 @@ function WorkspacePage() {
     workspaceRef.current = activeWorkspace;
 
     setFiles([]);
+
     setSelectedFile(null);
+
     selectedFileRef.current = null;
 
     setCode("");
@@ -379,12 +412,12 @@ function WorkspacePage() {
       return;
     }
 
-    if (agentStatus === "running") {
+    if (agentStatus === "running" || fileRunning) {
       setAgentEvents((current) => [
         ...current,
         {
           title: "Workspace switch blocked",
-          description: "Wait for the active agent run to finish.",
+          description: "Wait for the active execution to finish.",
           type: "warning",
         },
       ]);
@@ -407,17 +440,19 @@ function WorkspacePage() {
   };
 
   const createNewWorkspace = async (name) => {
-    if (agentStatus === "running") {
+    if (agentStatus === "running" || fileRunning) {
+      const error = new Error("Wait for the active execution to finish.");
+
       setAgentEvents((current) => [
         ...current,
         {
           title: "Workspace creation blocked",
-          description: "Wait for the active agent run to finish.",
+          description: error.message,
           type: "warning",
         },
       ]);
 
-      return;
+      throw error;
     }
 
     try {
@@ -462,8 +497,8 @@ function WorkspacePage() {
   };
 
   const deleteExistingWorkspace = async (name) => {
-    if (agentStatus === "running") {
-      const error = new Error("Wait for the active agent run to finish.");
+    if (agentStatus === "running" || fileRunning) {
+      const error = new Error("Wait for the active execution to finish.");
 
       setAgentEvents((current) => [
         ...current,
@@ -1003,7 +1038,12 @@ function WorkspacePage() {
   const sendPrompt = async () => {
     const task = prompt.trim();
 
-    if (!task || agentStatus === "running" || !workspaceReady(workspace)) {
+    if (
+      !task ||
+      agentStatus === "running" ||
+      fileRunning ||
+      !workspaceReady(workspace)
+    ) {
       return;
     }
 
@@ -1074,14 +1114,90 @@ function WorkspacePage() {
     }
   };
 
-  const runCurrentFile = () => {
-    if (!selectedFile) {
+  const runCurrentFile = async () => {
+    if (!selectedFile || !workspaceReady(workspace) || fileRunning) {
       return;
     }
 
-    setTerminalLines((current) => [...current, `$ python ${selectedFile}`]);
-
     setBottomTab("terminal");
+
+    if (!selectedFile.toLowerCase().endsWith(".py")) {
+      setTerminalLines((current) => [
+        ...current,
+        `PythonGPT ~/${workspace} $ python ${selectedFile}`,
+        "Error: Only Python files can be executed.",
+      ]);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Execution rejected",
+          description: "Only Python files can be executed.",
+          type: "warning",
+        },
+      ]);
+
+      return;
+    }
+
+    if (agentStatus === "running") {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Execution blocked",
+          description: "Wait for the active agent run to finish.",
+          type: "warning",
+        },
+      ]);
+
+      return;
+    }
+
+    setFileRunning(true);
+
+    setTerminalLines((current) => [
+      ...current,
+      "",
+      `PythonGPT ~/${workspace} $ python ${selectedFile}`,
+    ]);
+
+    try {
+      await saveWorkspaceFile(workspace, selectedFile, code);
+
+      const result = await runWorkspacePython(workspace, selectedFile, 10);
+
+      const output = getExecutionOutput(result);
+
+      const exitLine = `Process exited with code ${result.return_code}.`;
+
+      setTerminalLines((current) => [
+        ...current,
+        ...(output.length ? output : ["(no output)"]),
+        exitLine,
+      ]);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: result.success ? "Execution completed" : "Execution failed",
+          description: `${selectedFile} exited with code ${result.return_code}.`,
+          type: result.success ? "success" : "error",
+        },
+      ]);
+    } catch (error) {
+      setTerminalLines((current) => [...current, `Error: ${error.message}`]);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Execution failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+    } finally {
+      setFileRunning(false);
+    }
   };
 
   return (
