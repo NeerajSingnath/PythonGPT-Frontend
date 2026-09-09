@@ -141,6 +141,12 @@ export function createAgentRun({
   });
 }
 
+export function cancelAgentRun(runId) {
+  return request(`/agent/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+  });
+}
+
 export function getAgentRun(runId) {
   return request(`/agent/runs/${encodeURIComponent(runId)}`);
 }

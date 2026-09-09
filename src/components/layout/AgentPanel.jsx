@@ -1,4 +1,11 @@
-import { Activity, Bot, FileDiff, ListChecks, Send } from "lucide-react";
+import {
+  Activity,
+  Bot,
+  FileDiff,
+  ListChecks,
+  Send,
+  Square,
+} from "lucide-react";
 
 import { useEffect, useState } from "react";
 
@@ -93,15 +100,18 @@ function AgentPanel({
   prompt,
   onPromptChange,
   onSendPrompt,
+  onCancelAgent,
   plan = [],
   events = [],
   changes = [],
   status = "idle",
+  cancelPending = false,
 }) {
   const [activeTab, setActiveTab] = useState("plan");
 
-  const statusLabel =
-    status === "running"
+  const statusLabel = cancelPending
+    ? "Stopping"
+    : status === "running"
       ? "Running"
       : status === "connected"
         ? "Ready"
@@ -152,7 +162,21 @@ function AgentPanel({
 
         <span className="text-xs font-semibold">PythonGPT Agent</span>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {status === "running" && (
+            <button
+              type="button"
+              onClick={onCancelAgent}
+              disabled={cancelPending}
+              title={cancelPending ? "Stopping agent" : "Stop agent"}
+              className="flex h-6 items-center gap-1.5 rounded border border-red-500/30 bg-red-500/10 px-2 text-[10px] font-medium text-red-400 transition hover:border-red-500/50 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Square size={9} className="fill-current" />
+
+              {cancelPending ? "Stopping" : "Stop"}
+            </button>
+          )}
+
           <StatusDot status={statusType} label={statusLabel} />
         </div>
       </div>
@@ -287,7 +311,8 @@ function AgentPanel({
             }}
             placeholder="Ask PythonGPT to build, fix or explain..."
             rows={4}
-            className="w-full resize-none bg-transparent p-3 text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+            disabled={status === "running"}
+            className="w-full resize-none bg-transparent p-3 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 disabled:cursor-not-allowed disabled:opacity-60"
           />
 
           <div className="flex items-center justify-between px-2 pb-2">

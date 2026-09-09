@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  cancelAgentRun,
   createAgentRun,
   createAgentRunSocket,
   createWorkspaceFile,
@@ -282,7 +283,7 @@ function parseWorkspaceChanges(data) {
         additions: 0,
         deletions: 0,
         lines: [],
-        untracked: true,
+        untracked: false,
       });
     }
 
@@ -406,6 +407,8 @@ function WorkspacePage() {
 
   const [fileRunning, setFileRunning] = useState(false);
 
+  const [cancelPending, setCancelPending] = useState(false);
+
   const [runId, setRunId] = useState(null);
 
   const [plan, setPlan] = useState([]);
@@ -506,11 +509,7 @@ function WorkspacePage() {
                 content: line,
               })),
             ];
-          } catch {
-            // Binary or unreadable
-            // untracked files remain
-            // visible without content.
-          }
+          } catch {}
         }),
       );
 
@@ -873,7 +872,6 @@ function WorkspacePage() {
         setExpandedFolders({});
 
         setPlan([]);
-
         setTestLines([]);
 
         setTerminalLines(["PythonGPT $", "No workspace selected."]);
@@ -1101,6 +1099,8 @@ function WorkspacePage() {
       handledRuns.current.add(completedRunId);
     }
 
+    setCancelPending(false);
+
     if (Array.isArray(run?.plan) && run.plan.length > 0) {
       setPlan(run.plan);
     }
@@ -1150,6 +1150,8 @@ function WorkspacePage() {
       handledRuns.current.add(failedRunId);
     }
 
+    setCancelPending(false);
+
     if (Array.isArray(run?.plan) && run.plan.length > 0) {
       setPlan(run.plan);
     }
@@ -1173,6 +1175,58 @@ function WorkspacePage() {
     refreshChanges(workspaceRef.current);
 
     setRunId((current) => (current === failedRunId ? null : current));
+  };
+
+  const synchronizeCancelledRun = async (run) => {
+    const cancelledRunId = run?.id ?? runId;
+
+    if (cancelledRunId && handledRuns.current.has(cancelledRunId)) {
+      return;
+    }
+
+    if (cancelledRunId) {
+      handledRuns.current.add(cancelledRunId);
+    }
+
+    setCancelPending(false);
+
+    if (Array.isArray(run?.plan) && run.plan.length > 0) {
+      setPlan(run.plan);
+    }
+
+    const finalTestOutput = getLatestTestOutput(run?.history);
+
+    if (finalTestOutput.length > 0) {
+      setTestLines(finalTestOutput);
+    }
+
+    setAgentStatus("connected");
+
+    setAgentEvents((current) => [
+      ...current,
+      {
+        title: "Run cancelled",
+        description: "PythonGPT stopped the active agent run.",
+        type: "warning",
+      },
+    ]);
+
+    setTerminalLines((current) => [
+      ...current,
+      "PythonGPT agent run cancelled.",
+    ]);
+
+    const activeWorkspace = workspaceRef.current;
+
+    try {
+      await refreshFiles(activeWorkspace);
+
+      await reloadSelectedFile(activeWorkspace, selectedFileRef.current);
+
+      await refreshChanges(activeWorkspace);
+    } catch {}
+
+    setRunId((current) => (current === cancelledRunId ? null : current));
   };
 
   useEffect(() => {
@@ -1211,11 +1265,25 @@ function WorkspacePage() {
 
         if (snapshot.status === "completed") {
           await synchronizeCompletedRun(snapshot);
+
+          return;
         }
 
         if (snapshot.status === "failed") {
           synchronizeFailedRun(snapshot);
+
+          return;
         }
+
+        if (snapshot.status === "cancelled") {
+          await synchronizeCancelledRun(snapshot);
+        }
+
+        return;
+      }
+
+      if (message.type === "cancellation_requested") {
+        setCancelPending(true);
 
         return;
       }
@@ -1376,6 +1444,12 @@ function WorkspacePage() {
           return;
         }
 
+        if (eventType === "cancelled") {
+          setCancelPending(true);
+
+          return;
+        }
+
         if (eventType === "finished") {
           setAgentEvents((current) => [
             ...current,
@@ -1416,6 +1490,21 @@ function WorkspacePage() {
             id: runId,
             status: "failed",
             error: message.error,
+          });
+        }
+
+        return;
+      }
+
+      if (message.type === "run_cancelled") {
+        try {
+          const run = await getAgentRun(runId);
+
+          await synchronizeCancelledRun(run);
+        } catch {
+          await synchronizeCancelledRun({
+            id: runId,
+            status: "cancelled",
           });
         }
       }
@@ -1464,6 +1553,12 @@ function WorkspacePage() {
 
         if (run.status === "failed") {
           synchronizeFailedRun(run);
+
+          return;
+        }
+
+        if (run.status === "cancelled") {
+          await synchronizeCancelledRun(run);
         }
       } catch {}
     };
@@ -1566,6 +1661,48 @@ function WorkspacePage() {
     };
   }, [workspace, selectedFile, code, savedCode]);
 
+  const cancelCurrentAgent = async () => {
+    if (!runId || agentStatus !== "running" || cancelPending) {
+      return;
+    }
+
+    const activeRunId = runId;
+
+    setCancelPending(true);
+
+    setAgentEvents((current) => [
+      ...current,
+      {
+        title: "Stopping agent",
+        description:
+          "Cancellation requested. PythonGPT will stop before the next safe action.",
+        type: "warning",
+      },
+    ]);
+
+    setTerminalLines((current) => [...current, "Stopping PythonGPT agent..."]);
+
+    try {
+      await cancelAgentRun(activeRunId);
+    } catch (error) {
+      setCancelPending(false);
+
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Cancellation failed",
+          description: error.message,
+          type: "error",
+        },
+      ]);
+
+      setTerminalLines((current) => [
+        ...current,
+        `Unable to cancel agent: ${error.message}`,
+      ]);
+    }
+  };
+
   const sendPrompt = async () => {
     const task = prompt.trim();
 
@@ -1596,6 +1733,8 @@ function WorkspacePage() {
 
       return;
     }
+
+    setCancelPending(false);
 
     setAgentStatus("running");
 
@@ -1649,6 +1788,8 @@ function WorkspacePage() {
 
       setTerminalLines((current) => [...current, `Run ID: ${newRunId}`]);
     } catch (error) {
+      setCancelPending(false);
+
       setAgentStatus("error");
 
       setAgentEvents((current) => [
@@ -1793,6 +1934,8 @@ function WorkspacePage() {
           prompt={prompt}
           onPromptChange={setPrompt}
           onSendPrompt={sendPrompt}
+          onCancelAgent={cancelCurrentAgent}
+          cancelPending={cancelPending}
           plan={plan}
           events={agentEvents}
           changes={changes}
