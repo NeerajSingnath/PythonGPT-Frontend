@@ -88,7 +88,6 @@ function buildExplorerFiles(paths) {
     }
 
     const folderName = parts[0];
-
     const childName = parts.slice(1).join("/");
 
     if (!folders.has(folderName)) {
@@ -216,6 +215,8 @@ function WorkspacePage() {
 
   const [code, setCode] = useState("");
 
+  const [savedCode, setSavedCode] = useState("");
+
   const [prompt, setPrompt] = useState("");
 
   const [bottomTab, setBottomTab] = useState("terminal");
@@ -249,6 +250,8 @@ function WorkspacePage() {
 
   const workspaceRef = useRef(workspace);
 
+  const isDirty = Boolean(selectedFile && code !== savedCode);
+
   useEffect(() => {
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
@@ -275,12 +278,53 @@ function WorkspacePage() {
   const reloadSelectedFile = async (activeWorkspace, filePath) => {
     if (!filePath) {
       setCode("");
+      setSavedCode("");
       return;
     }
 
     const data = await getWorkspaceFile(activeWorkspace, filePath);
 
-    setCode(normalizeFileContent(data));
+    const content = normalizeFileContent(data);
+
+    setCode(content);
+
+    setSavedCode(content);
+  };
+
+  const saveActiveFile = async ({ report = false } = {}) => {
+    if (!selectedFile || !workspaceReady(workspace)) {
+      return false;
+    }
+
+    const activeWorkspace = workspace;
+
+    const activeFile = selectedFile;
+
+    const content = code;
+
+    await saveWorkspaceFile(activeWorkspace, activeFile, content);
+
+    if (
+      workspaceRef.current === activeWorkspace &&
+      selectedFileRef.current === activeFile
+    ) {
+      setSavedCode(content);
+    }
+
+    if (report) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "File saved",
+          description: activeFile,
+          type: "success",
+        },
+      ]);
+
+      setTerminalLines((current) => [...current, `Saved ${activeFile}`]);
+    }
+
+    return true;
   };
 
   const loadWorkspace = async (activeWorkspace, { initial = false } = {}) => {
@@ -295,6 +339,7 @@ function WorkspacePage() {
     selectedFileRef.current = null;
 
     setCode("");
+    setSavedCode("");
     setPlan([]);
     setTestLines([]);
 
@@ -375,6 +420,9 @@ function WorkspacePage() {
 
           workspaceRef.current = "No workspace";
 
+          setCode("");
+          setSavedCode("");
+
           setAgentEvents([
             {
               title: "Backend connected",
@@ -400,6 +448,9 @@ function WorkspacePage() {
         setWorkspace("Unavailable");
 
         workspaceRef.current = "Unavailable";
+
+        setCode("");
+        setSavedCode("");
 
         setAgentStatus("error");
 
@@ -435,6 +486,10 @@ function WorkspacePage() {
     }
 
     try {
+      if (isDirty) {
+        await saveActiveFile();
+      }
+
       await loadWorkspace(name);
     } catch (error) {
       setAgentEvents((current) => [
@@ -465,6 +520,10 @@ function WorkspacePage() {
     }
 
     try {
+      if (isDirty) {
+        await saveActiveFile();
+      }
+
       const created = await createWorkspaceRequest(name);
 
       const createdName = normalizeCreatedWorkspace(created, name);
@@ -524,6 +583,10 @@ function WorkspacePage() {
     try {
       const deletingActiveWorkspace = name === workspaceRef.current;
 
+      if (!deletingActiveWorkspace && isDirty) {
+        await saveActiveFile();
+      }
+
       await deleteWorkspaceRequest(name);
 
       const workspaceData = await getWorkspaces();
@@ -544,6 +607,7 @@ function WorkspacePage() {
         selectedFileRef.current = null;
 
         setCode("");
+        setSavedCode("");
 
         setExpandedFolders({});
 
@@ -624,13 +688,13 @@ function WorkspacePage() {
         throw new Error(`File already exists: ${filePath}`);
       }
 
-      if (selectedFile) {
-        await saveWorkspaceFile(workspace, selectedFile, code);
+      if (isDirty) {
+        await saveActiveFile();
       }
 
       await createWorkspaceFile(workspace, filePath, "");
 
-      const { explorerFiles } = await refreshFiles(workspace);
+      await refreshFiles(workspace);
 
       const topFolder = filePath.includes("/") ? filePath.split("/")[0] : null;
 
@@ -646,6 +710,7 @@ function WorkspacePage() {
       selectedFileRef.current = filePath;
 
       setCode("");
+      setSavedCode("");
 
       setAgentEvents((current) => [
         ...current,
@@ -657,10 +722,6 @@ function WorkspacePage() {
       ]);
 
       setTerminalLines((current) => [...current, `Created ${filePath}`]);
-
-      if (explorerFiles.length === 0) {
-        setFiles([]);
-      }
     } catch (error) {
       setAgentEvents((current) => [
         ...current,
@@ -709,6 +770,10 @@ function WorkspacePage() {
     try {
       const deletingSelected = selectedFileRef.current === filePath;
 
+      if (!deletingSelected && isDirty) {
+        await saveActiveFile();
+      }
+
       await deleteWorkspaceFile(workspace, filePath);
 
       const { paths, explorerFiles } = await refreshFiles(workspace);
@@ -728,6 +793,7 @@ function WorkspacePage() {
           selectedFileRef.current = null;
 
           setCode("");
+          setSavedCode("");
         }
       }
 
@@ -1154,13 +1220,26 @@ function WorkspacePage() {
       return;
     }
 
-    setSelectedFile(path);
+    if (path === selectedFile) {
+      return;
+    }
 
-    selectedFileRef.current = path;
-
-    setCode("");
+    if (agentStatus === "running" || fileRunning) {
+      return;
+    }
 
     try {
+      if (isDirty) {
+        await saveActiveFile();
+      }
+
+      setSelectedFile(path);
+
+      selectedFileRef.current = path;
+
+      setCode("");
+      setSavedCode("");
+
       await reloadSelectedFile(workspace, path);
     } catch (error) {
       setAgentEvents((current) => [
@@ -1175,23 +1254,14 @@ function WorkspacePage() {
   };
 
   const saveCurrentFile = async () => {
-    if (!selectedFile || !workspaceReady(workspace)) {
+    if (!selectedFile || !workspaceReady(workspace) || !isDirty) {
       return;
     }
 
     try {
-      await saveWorkspaceFile(workspace, selectedFile, code);
-
-      setAgentEvents((current) => [
-        ...current,
-        {
-          title: "File saved",
-          description: selectedFile,
-          type: "success",
-        },
-      ]);
-
-      setTerminalLines((current) => [...current, `Saved ${selectedFile}`]);
+      await saveActiveFile({
+        report: true,
+      });
     } catch (error) {
       setAgentEvents((current) => [
         ...current,
@@ -1223,7 +1293,7 @@ function WorkspacePage() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [workspace, selectedFile, code]);
+  }, [workspace, selectedFile, code, savedCode]);
 
   const sendPrompt = async () => {
     const task = prompt.trim();
@@ -1234,6 +1304,23 @@ function WorkspacePage() {
       fileRunning ||
       !workspaceReady(workspace)
     ) {
+      return;
+    }
+
+    try {
+      if (isDirty) {
+        await saveActiveFile();
+      }
+    } catch (error) {
+      setAgentEvents((current) => [
+        ...current,
+        {
+          title: "Agent start blocked",
+          description: `Unable to save ${selectedFile}: ${error.message}`,
+          type: "error",
+        },
+      ]);
+
       return;
     }
 
@@ -1352,7 +1439,7 @@ function WorkspacePage() {
     ]);
 
     try {
-      await saveWorkspaceFile(workspace, selectedFile, code);
+      await saveActiveFile();
 
       const result = await runWorkspacePython(workspace, selectedFile, 10);
 
@@ -1412,12 +1499,13 @@ function WorkspacePage() {
           onDeleteFile={deleteExistingFile}
         />
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <EditorPanel
             selectedFile={selectedFile}
             code={code}
             onChange={setCode}
             onRun={runCurrentFile}
+            isDirty={isDirty}
           />
 
           <BottomPanel

@@ -1,7 +1,7 @@
 import Editor from "@monaco-editor/react";
 import { Circle, FileCode2, Play } from "lucide-react";
 
-function EditorPanel({ selectedFile, code, onChange, onRun }) {
+function EditorPanel({ selectedFile, code, onChange, onRun, isDirty = false }) {
   const language = selectedFile?.endsWith(".py") ? "python" : "plaintext";
 
   return (
@@ -14,8 +14,8 @@ function EditorPanel({ selectedFile, code, onChange, onRun }) {
             {selectedFile || "No file selected"}
           </span>
 
-          {selectedFile && (
-            <Circle size={6} className="fill-zinc-500 text-zinc-500" />
+          {selectedFile && isDirty && (
+            <Circle size={6} className="fill-zinc-400 text-zinc-400" />
           )}
         </div>
 
@@ -24,6 +24,7 @@ function EditorPanel({ selectedFile, code, onChange, onRun }) {
             type="button"
             onClick={onRun}
             disabled={!selectedFile}
+            title="Run current file"
             className="rounded p-1.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <Play size={14} />
