@@ -268,6 +268,7 @@ function parseWorkspaceChanges(data) {
       additions: 0,
       deletions: 0,
       lines: [],
+      untracked: code === "??",
     });
   }
 
@@ -281,6 +282,7 @@ function parseWorkspaceChanges(data) {
         additions: 0,
         deletions: 0,
         lines: [],
+        untracked: true,
       });
     }
 
@@ -466,6 +468,51 @@ function WorkspacePage() {
       const data = await getWorkspaceDiff(activeWorkspace);
 
       const parsed = parseWorkspaceChanges(data);
+
+      const untracked = parsed.filter((change) => change.untracked);
+
+      await Promise.all(
+        untracked.map(async (change) => {
+          try {
+            const fileData = await getWorkspaceFile(
+              activeWorkspace,
+              change.path,
+            );
+
+            const content = normalizeFileContent(fileData).replaceAll(
+              "\r\n",
+              "\n",
+            );
+
+            if (content === "") {
+              return;
+            }
+
+            const lines = content.split("\n");
+
+            if (lines.at(-1) === "") {
+              lines.pop();
+            }
+
+            change.additions = lines.length;
+
+            change.lines = [
+              {
+                type: "header",
+                content: `@@ -0,0 +1,${lines.length} @@`,
+              },
+              ...lines.map((line) => ({
+                type: "add",
+                content: line,
+              })),
+            ];
+          } catch {
+            // Binary or unreadable
+            // untracked files remain
+            // visible without content.
+          }
+        }),
+      );
 
       if (workspaceRef.current === activeWorkspace) {
         setChanges(parsed);
