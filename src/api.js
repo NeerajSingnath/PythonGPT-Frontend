@@ -118,6 +118,10 @@ export function runWorkspacePython(workspace, filePath, timeout = 10) {
   });
 }
 
+export function getWorkspaceDiff(workspace) {
+  return request(`/workspaces/${encodeURIComponent(workspace)}/diff`);
+}
+
 export function createAgentRun({
   workspace,
   task,

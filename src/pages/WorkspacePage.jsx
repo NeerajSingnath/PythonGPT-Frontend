@@ -8,6 +8,7 @@ import {
   deleteWorkspaceFile,
   deleteWorkspace as deleteWorkspaceRequest,
   getAgentRun,
+  getWorkspaceDiff,
   getWorkspaceFile,
   getWorkspaceFiles,
   getWorkspaces,
@@ -88,6 +89,7 @@ function buildExplorerFiles(paths) {
     }
 
     const folderName = parts[0];
+
     const childName = parts.slice(1).join("/");
 
     if (!folders.has(folderName)) {
@@ -200,6 +202,183 @@ function getLatestTestOutput(history) {
   return [];
 }
 
+function normalizeGitPath(path) {
+  if (!path) {
+    return "";
+  }
+
+  let value = path.trim();
+
+  if (value.includes(" -> ")) {
+    value = value.split(" -> ").at(-1);
+  }
+
+  if (value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1);
+  }
+
+  if (value.startsWith("a/") || value.startsWith("b/")) {
+    value = value.slice(2);
+  }
+
+  return value;
+}
+
+function getGitStatus(code) {
+  if (code === "??") {
+    return "A";
+  }
+
+  if (code.includes("D")) {
+    return "D";
+  }
+
+  if (code.includes("A")) {
+    return "A";
+  }
+
+  return "M";
+}
+
+function parseWorkspaceChanges(data) {
+  const changes = new Map();
+
+  const statusText = data?.status ?? "";
+
+  const diffText = data?.diff ?? "";
+
+  for (const line of statusText.replaceAll("\r\n", "\n").split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    const code = line.slice(0, 2);
+
+    const rawPath = line.length > 3 ? line.slice(3) : "";
+
+    const path = normalizeGitPath(rawPath);
+
+    if (!path) {
+      continue;
+    }
+
+    changes.set(path, {
+      path,
+      status: getGitStatus(code),
+      additions: 0,
+      deletions: 0,
+      lines: [],
+    });
+  }
+
+  let currentChange = null;
+
+  const ensureChange = (path) => {
+    if (!changes.has(path)) {
+      changes.set(path, {
+        path,
+        status: "M",
+        additions: 0,
+        deletions: 0,
+        lines: [],
+      });
+    }
+
+    return changes.get(path);
+  };
+
+  for (const line of diffText.replaceAll("\r\n", "\n").split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+
+      if (match) {
+        const path = normalizeGitPath(match[2]);
+
+        currentChange = ensureChange(path);
+      } else {
+        currentChange = null;
+      }
+
+      continue;
+    }
+
+    if (!currentChange) {
+      continue;
+    }
+
+    if (line.startsWith("new file mode ")) {
+      currentChange.status = "A";
+
+      continue;
+    }
+
+    if (line.startsWith("deleted file mode ")) {
+      currentChange.status = "D";
+
+      continue;
+    }
+
+    if (
+      line.startsWith("index ") ||
+      line.startsWith("--- ") ||
+      line.startsWith("+++ ")
+    ) {
+      continue;
+    }
+
+    if (line.startsWith("@@")) {
+      currentChange.lines.push({
+        type: "header",
+        content: line,
+      });
+
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      currentChange.additions += 1;
+
+      currentChange.lines.push({
+        type: "add",
+        content: line.slice(1),
+      });
+
+      continue;
+    }
+
+    if (line.startsWith("-")) {
+      currentChange.deletions += 1;
+
+      currentChange.lines.push({
+        type: "delete",
+        content: line.slice(1),
+      });
+
+      continue;
+    }
+
+    if (line.startsWith(" ")) {
+      currentChange.lines.push({
+        type: "context",
+        content: line.slice(1),
+      });
+
+      continue;
+    }
+
+    if (line.startsWith("\\ No newline")) {
+      currentChange.lines.push({
+        type: "header",
+        content: line,
+      });
+    }
+  }
+
+  return Array.from(changes.values()).sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+}
+
 function WorkspacePage() {
   const [workspaces, setWorkspaces] = useState([]);
 
@@ -228,6 +407,8 @@ function WorkspacePage() {
   const [runId, setRunId] = useState(null);
 
   const [plan, setPlan] = useState([]);
+
+  const [changes, setChanges] = useState([]);
 
   const [agentEvents, setAgentEvents] = useState([
     {
@@ -275,6 +456,31 @@ function WorkspacePage() {
     };
   };
 
+  const refreshChanges = async (activeWorkspace) => {
+    if (!workspaceReady(activeWorkspace)) {
+      setChanges([]);
+      return [];
+    }
+
+    try {
+      const data = await getWorkspaceDiff(activeWorkspace);
+
+      const parsed = parseWorkspaceChanges(data);
+
+      if (workspaceRef.current === activeWorkspace) {
+        setChanges(parsed);
+      }
+
+      return parsed;
+    } catch {
+      if (workspaceRef.current === activeWorkspace) {
+        setChanges([]);
+      }
+
+      return [];
+    }
+  };
+
   const reloadSelectedFile = async (activeWorkspace, filePath) => {
     if (!filePath) {
       setCode("");
@@ -311,6 +517,8 @@ function WorkspacePage() {
       setSavedCode(content);
     }
 
+    await refreshChanges(activeWorkspace);
+
     if (report) {
       setAgentEvents((current) => [
         ...current,
@@ -333,6 +541,7 @@ function WorkspacePage() {
     workspaceRef.current = activeWorkspace;
 
     setFiles([]);
+    setChanges([]);
 
     setSelectedFile(null);
 
@@ -364,6 +573,8 @@ function WorkspacePage() {
 
       await reloadSelectedFile(activeWorkspace, firstFile);
     }
+
+    await refreshChanges(activeWorkspace);
 
     if (initial) {
       setAgentEvents([
@@ -422,6 +633,7 @@ function WorkspacePage() {
 
           setCode("");
           setSavedCode("");
+          setChanges([]);
 
           setAgentEvents([
             {
@@ -451,6 +663,7 @@ function WorkspacePage() {
 
         setCode("");
         setSavedCode("");
+        setChanges([]);
 
         setAgentStatus("error");
 
@@ -601,6 +814,7 @@ function WorkspacePage() {
         workspaceRef.current = "No workspace";
 
         setFiles([]);
+        setChanges([]);
 
         setSelectedFile(null);
 
@@ -696,6 +910,8 @@ function WorkspacePage() {
 
       await refreshFiles(workspace);
 
+      await refreshChanges(workspace);
+
       const topFolder = filePath.includes("/") ? filePath.split("/")[0] : null;
 
       if (topFolder) {
@@ -777,6 +993,8 @@ function WorkspacePage() {
       await deleteWorkspaceFile(workspace, filePath);
 
       const { paths, explorerFiles } = await refreshFiles(workspace);
+
+      await refreshChanges(workspace);
 
       if (deletingSelected) {
         const nextFile = getFirstFilePath(explorerFiles);
@@ -867,6 +1085,8 @@ function WorkspacePage() {
       await refreshFiles(activeWorkspace);
 
       await reloadSelectedFile(activeWorkspace, selectedFileRef.current);
+
+      await refreshChanges(activeWorkspace);
     } catch {}
 
     setRunId((current) => (current === completedRunId ? null : current));
@@ -902,6 +1122,8 @@ function WorkspacePage() {
       ...current,
       `Run failed: ${run?.error ?? "Unknown error"}`,
     ]);
+
+    refreshChanges(workspaceRef.current);
 
     setRunId((current) => (current === failedRunId ? null : current));
   };
@@ -1057,6 +1279,8 @@ function WorkspacePage() {
                 activeWorkspace,
                 selectedFileRef.current,
               );
+
+              await refreshChanges(activeWorkspace);
             } catch {}
           }
 
@@ -1311,6 +1535,8 @@ function WorkspacePage() {
       if (isDirty) {
         await saveActiveFile();
       }
+
+      await refreshChanges(workspace);
     } catch (error) {
       setAgentEvents((current) => [
         ...current,
@@ -1522,6 +1748,7 @@ function WorkspacePage() {
           onSendPrompt={sendPrompt}
           plan={plan}
           events={agentEvents}
+          changes={changes}
           status={agentStatus}
         />
       </div>
